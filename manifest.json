@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "RecentTabSwitcher",
+  "version": "1.0.0",
+  "description": "Switch tabs by most-recently-used order (MRU), similar to Alt+Tab.",
+  "minimum_chrome_version": "110",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["tabs", "storage"],
+  "commands": {
+    "mru_forward": {
+      "suggested_key": {
+        "default": "Alt+Q",
+        "mac": "Command+E"
+      },
+      "description": "MRU: switch to the previously used tab (toggle / step forward in MRU)"
+    },
+    "mru_backward": {
+      "suggested_key": {
+        "default": "Alt+E",
+        "mac": "Alt+E"
+      },
+      "description": "MRU: step deeper into MRU history (older than the last switch)"
+    }
+  }
+}

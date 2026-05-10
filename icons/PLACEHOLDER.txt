@@ -1,0 +1,2 @@
+Replace icon16.png, icon48.png, and icon128.png with your own artwork if desired.
+The bundled files are simple solid-color placeholders so the extension loads unpacked without extra steps.
