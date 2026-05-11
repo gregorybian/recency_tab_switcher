@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 450px;
+      max-height: 600px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 15px;
+      font-size: 16px;
+      font-weight: 600;
+      border-bottom: 1px solid #e0e0e0;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+
+    .header-left {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .select-btn {
+      background: rgba(255, 255, 255, 0.2);
+      color: white;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+      margin-top: 2px;
+    }
+
+    .select-btn:hover {
+      background: rgba(255, 255, 255, 0.35);
+    }
+
+    .select-btn.active {
+      background: white;
+      color: #667eea;
+      border-color: white;
+    }
+
+    .tab-count {
+      font-size: 13px;
+      opacity: 0.9;
+      margin-top: 4px;
+    }
+
+    .tab-list {
+      overflow-y: auto;
+      max-height: 520px;
+    }
+
+    .tab-item {
+      display: flex;
+      align-items: center;
+      padding: 12px 15px;
+      border-bottom: 1px solid #e0e0e0;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      background: white;
+    }
+
+    .tab-item:hover {
+      background: #f9f9f9;
+      border-left: 3px solid #667eea;
+      padding-left: 12px;
+    }
+
+    .tab-item.active {
+      background: #e8eaf6;
+      border-left: 3px solid #667eea;
+      padding-left: 12px;
+      font-weight: 500;
+    }
+
+    .tab-item.selected {
+      background: #fef3c7;
+    }
+
+    .tab-item.selected:hover {
+      background: #fde68a;
+    }
+
+    .tab-checkbox {
+      width: 16px;
+      height: 16px;
+      margin-right: 10px;
+      flex-shrink: 0;
+      cursor: pointer;
+      accent-color: #667eea;
+      display: none;
+    }
+
+    body.select-mode .tab-checkbox {
+      display: block;
+    }
+
+    body.select-mode .tab-close {
+      display: none;
+    }
+
+    .action-bar {
+      display: none;
+      position: sticky;
+      bottom: 0;
+      background: white;
+      border-top: 1px solid #e0e0e0;
+      padding: 10px 15px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.08);
+    }
+
+    body.select-mode .action-bar {
+      display: flex;
+    }
+
+    .action-bar-info {
+      font-size: 13px;
+      color: #666;
+    }
+
+    .action-bar-buttons {
+      display: flex;
+      gap: 8px;
+    }
+
+    .action-btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      transition: all 0.15s ease;
+    }
+
+    .action-btn.select-all {
+      background: #f0f0f0;
+      color: #333;
+    }
+
+    .action-btn.select-all:hover {
+      background: #e0e0e0;
+    }
+
+    .action-btn.close-selected {
+      background: #dc2626;
+      color: white;
+    }
+
+    .action-btn.close-selected:hover {
+      background: #b91c1c;
+    }
+
+    .action-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .tab-favicon {
+      width: 20px;
+      height: 20px;
+      margin-right: 12px;
+      border-radius: 2px;
+      background-size: contain;
+      background-repeat: no-repeat;
+      background-position: center;
+      flex-shrink: 0;
+    }
+
+    .tab-info {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .tab-title {
+      font-size: 14px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .tab-url {
+      font-size: 12px;
+      color: #999;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .tab-window-label {
+      font-size: 11px;
+      background: #f0f0f0;
+      color: #666;
+      padding: 2px 6px;
+      border-radius: 2px;
+      margin-left: 8px;
+      flex-shrink: 0;
+    }
+
+    .tab-close {
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      font-size: 15px;
+      color: #999;
+      flex-shrink: 0;
+      margin-left: 8px;
+      opacity: 0;
+      transition: all 0.15s ease;
+      cursor: pointer;
+    }
+
+    .tab-item:hover .tab-close {
+      opacity: 1;
+    }
+
+    .tab-close:hover {
+      background: #fee2e2;
+      color: #dc2626;
+    }
+
+    .empty-state {
+      padding: 40px 20px;
+      text-align: center;
+      color: #999;
+      font-size: 14px;
+    }
+
+    /* Scrollbar styling */
+    .tab-list::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .tab-list::-webkit-scrollbar-track {
+      background: #f1f1f1;
+    }
+
+    .tab-list::-webkit-scrollbar-thumb {
+      background: #ccc;
+      border-radius: 4px;
+    }
+
+    .tab-list::-webkit-scrollbar-thumb:hover {
+      background: #aaa;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <div>All Tabs</div>
+      <div class="tab-count" id="tabCount"></div>
+    </div>
+    <button class="select-btn" id="selectBtn">Select</button>
+  </div>
+  <div class="tab-list" id="tabList"></div>
+  <div class="action-bar" id="actionBar">
+    <div class="action-bar-info" id="selectedCount">0 selected</div>
+    <div class="action-bar-buttons">
+      <button class="action-btn select-all" id="selectAllBtn">Select All</button>
+      <button class="action-btn close-selected" id="closeSelectedBtn" disabled>Close Selected</button>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

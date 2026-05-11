@@ -28,5 +28,9 @@
       },
       "description": "MRU: step deeper into MRU history (older than the last switch)"
     }
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Recent Tabs"
   }
 }

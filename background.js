@@ -181,8 +181,18 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
   }
 });
 
-chrome.commands.onCommand.addListener((command) => {
-  if (command === "mru_forward" || command === "mru_backward") {
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command === "mru_forward") {
+    // Open the popup on Alt+Q
+    try {
+      await handleCommand(command);
+      await chrome.action.openPopup();
+      log("Switched tab and opened popup via Alt+Q");
+    } catch (error) {
+      warn("Could not switch tab or open popup", error);
+    }
+  } else if (command === "mru_backward") {
+    // Keep MRU backward switch for Alt+E
     void handleCommand(command);
   }
 });
