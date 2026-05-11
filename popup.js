@@ -213,9 +213,12 @@ function escapeHtml(text) {
 populateTabs();
 
 // Close popup when Alt key is released (Alt+Tab-like behavior)
+// Also commits the traversal so the MRU list is reordered.
 document.addEventListener('keyup', (e) => {
   if (e.key === 'Alt') {
-    window.close();
+    chrome.runtime.sendMessage({ type: 'commitTraversal' }).finally(() => {
+      window.close();
+    });
   }
 });
 

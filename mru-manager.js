@@ -3,6 +3,10 @@
  *
  * Ordering: index 0 = most recently active tab in that window, index 1 = previous, ...
  * Duplicate tab IDs are never stored. Closed tabs are removed on tab removal events.
+ *
+ * Traversal mode: when the user is cycling through tabs (holding Alt and pressing Q/W),
+ * a snapshot of the MRU list is frozen and a cursor walks through it. The live MRU list
+ * is NOT reordered during traversal. When traversal ends, the final tab is recorded.
  */
 
 (function initMruManager(global) {
@@ -20,6 +24,12 @@
     constructor() {
       /** @type {MruByWindow} */
       this.mruByWindow = {};
+
+      /**
+       * Traversal state — null when not traversing.
+       * @type {{ windowId: number, snapshot: number[], cursor: number } | null}
+       */
+      this._traversal = null;
     }
 
     log(...args) {
@@ -29,6 +39,117 @@
     warn(...args) {
       console.warn(LOG_PREFIX, ...args);
     }
+
+    // ── Traversal API ────────────────────────────────────────────────
+
+    /** @returns {boolean} */
+    get isTraversing() {
+      return this._traversal !== null;
+    }
+
+    /** @returns {number | undefined} */
+    get traversalWindowId() {
+      return this._traversal?.windowId;
+    }
+
+    /** @returns {number | undefined} The tab id the cursor currently points to. */
+    get traversalCurrentTabId() {
+      if (!this._traversal) return undefined;
+      return this._traversal.snapshot[this._traversal.cursor];
+    }
+
+    /**
+     * Begin a traversal cycle. Snapshots the current MRU list so it stays
+     * stable while the user cycles. Cursor starts at index 0 (the active tab).
+     * @param {number} windowId
+     * @returns {boolean} true if traversal was started
+     */
+    startTraversal(windowId) {
+      const list = this.mruByWindow[windowId];
+      if (!list || list.length < 2) return false;
+
+      this._traversal = {
+        windowId,
+        snapshot: [...list],
+        cursor: 0,
+      };
+      this.log("Traversal started", { windowId, tabs: list.length });
+      return true;
+    }
+
+    /**
+     * Move cursor forward (toward older/less-recent tabs). Wraps around.
+     * @returns {number | undefined} tab id at the new cursor position
+     */
+    stepForward() {
+      if (!this._traversal || this._traversal.snapshot.length === 0) return undefined;
+      this._traversal.cursor =
+        (this._traversal.cursor + 1) % this._traversal.snapshot.length;
+      return this._traversal.snapshot[this._traversal.cursor];
+    }
+
+    /**
+     * Move cursor backward (toward newer/more-recent tabs). Wraps around.
+     * @returns {number | undefined} tab id at the new cursor position
+     */
+    stepBackward() {
+      if (!this._traversal || this._traversal.snapshot.length === 0) return undefined;
+      const len = this._traversal.snapshot.length;
+      this._traversal.cursor = (this._traversal.cursor - 1 + len) % len;
+      return this._traversal.snapshot[this._traversal.cursor];
+    }
+
+    /**
+     * Remove a stale tab from the traversal snapshot (e.g. it was closed).
+     * Adjusts the cursor so it doesn't skip entries or go out of bounds.
+     * @param {number} tabId
+     */
+    removeFromTraversal(tabId) {
+      if (!this._traversal) return;
+      const idx = this._traversal.snapshot.indexOf(tabId);
+      if (idx === -1) return;
+
+      this._traversal.snapshot.splice(idx, 1);
+
+      if (this._traversal.snapshot.length === 0) {
+        this._traversal = null;
+        return;
+      }
+
+      // Adjust cursor: if removed item was before cursor, shift back.
+      // If at cursor, keep position (now points to the next element).
+      if (idx < this._traversal.cursor) {
+        this._traversal.cursor--;
+      }
+      // Clamp in case cursor is now past the end
+      if (this._traversal.cursor >= this._traversal.snapshot.length) {
+        this._traversal.cursor = 0;
+      }
+    }
+
+    /**
+     * End traversal and record the final tab as the most recently used.
+     * This reorders the live MRU list so the chosen tab is at index 0.
+     */
+    commitTraversal() {
+      if (!this._traversal) return;
+      const { windowId, snapshot, cursor } = this._traversal;
+      const finalTabId = snapshot[cursor];
+      this._traversal = null;
+
+      if (finalTabId != null) {
+        this.recordActivation(windowId, finalTabId);
+        this.log("Traversal committed", { windowId, tab: finalTabId });
+      }
+    }
+
+    /** End traversal without recording anything. */
+    cancelTraversal() {
+      this.log("Traversal cancelled");
+      this._traversal = null;
+    }
+
+    // ── Core MRU logic (unchanged) ───────────────────────────────────
 
     /**
      * Load MRU state from session storage (survives service worker restarts).

@@ -23,8 +23,8 @@
     },
     "mru_backward": {
       "suggested_key": {
-        "default": "Alt+E",
-        "mac": "Alt+E"
+        "default": "Alt+W",
+        "mac": "Alt+W"
       },
       "description": "MRU: step deeper into MRU history (older than the last switch)"
     }
