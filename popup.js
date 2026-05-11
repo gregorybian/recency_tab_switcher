@@ -212,6 +212,13 @@ function escapeHtml(text) {
 // Populate tabs when popup opens
 populateTabs();
 
+// Close popup when Alt key is released (Alt+Tab-like behavior)
+document.addEventListener('keyup', (e) => {
+  if (e.key === 'Alt') {
+    window.close();
+  }
+});
+
 // Wire up header buttons
 document.getElementById('selectBtn').addEventListener('click', toggleSelectMode);
 document.getElementById('selectAllBtn').addEventListener('click', toggleSelectAll);
