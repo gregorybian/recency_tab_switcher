@@ -19,14 +19,14 @@
         "default": "Alt+Q",
         "mac": "Command+E"
       },
-      "description": "MRU: switch to the previously used tab (toggle / step forward in MRU)"
+      "description": "Quick toggle between the two most recent tabs"
     },
     "mru_backward": {
       "suggested_key": {
         "default": "Alt+W",
         "mac": "Alt+W"
       },
-      "description": "MRU: step deeper into MRU history (older than the last switch)"
+      "description": "Cycle through all tabs in most-recently-used order (opens popup)"
     }
   },
   "action": {

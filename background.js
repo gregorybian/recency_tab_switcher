@@ -2,19 +2,21 @@
  * RecentTabSwitcher — background service worker (Manifest V3).
  * Tracks per-window MRU order and handles keyboard commands.
  *
- * Traversal mode: when the user holds Alt and presses Q/W repeatedly,
- * we walk through the full MRU list without reordering it. The list is
- * committed (reordered) only when traversal ends.
+ * Alt+Q  → simple 2-tab toggle (no traversal, no popup, race-condition-free)
+ * Alt+W  → full MRU traversal with popup (freezes the MRU list, walks a cursor)
  */
 
-// Shared MRU implementation (service worker has no ES module imports in all Chrome versions without "type":"module")
 importScripts("mru-manager.js");
 
 const LOG_PREFIX = "[RecentTabSwitcher]";
 const mru = new MruManager();
 
-/** Tab id we expect Chrome's onActivated to fire for (traversal-triggered). */
-let expectedTraversalTabId = null;
+/**
+ * Set of tab IDs we expect onActivated to fire for during traversal.
+ * Using a Set (not a single ID) handles rapid Alt+W presses where multiple
+ * activations may be in flight concurrently.
+ */
+const pendingTraversalActivations = new Set();
 
 /** Timeout handle for auto-committing traversal after inactivity. */
 let traversalTimeout = null;
@@ -48,6 +50,7 @@ async function safeGetTab(tabId) {
  * Activate a tab and focus its window. Cleans stale MRU entries if the tab vanished.
  * @param {number} windowId
  * @param {number} tabId
+ * @returns {Promise<boolean>}
  */
 async function activateTab(windowId, tabId) {
   const tab = await safeGetTab(tabId);
@@ -73,7 +76,38 @@ async function activateTab(windowId, tabId) {
   }
 }
 
-// ── Traversal ────────────────────────────────────────────────────────
+// ── Alt+Q: Simple 2-tab toggle ──────────────────────────────────────
+//
+// No traversal state, no popup, no onActivated suppression.
+// Chrome's onActivated fires naturally and records the switch.
+
+async function handleSimpleToggle() {
+  // If a traversal is active (user was doing Alt+W), commit it first.
+  if (mru.isTraversing) {
+    await commitTraversalNow();
+  }
+
+  const [activeTab] = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  if (!activeTab?.id || activeTab.windowId == null) {
+    warn("No active tab in last focused window");
+    return;
+  }
+
+  const targetId = mru.getMruForwardTarget(activeTab.windowId, activeTab.id);
+  if (targetId == null || targetId === activeTab.id) {
+    log("No alternative tab for toggle");
+    return;
+  }
+
+  log("Simple toggle", { from: activeTab.id, to: targetId });
+  await activateTab(activeTab.windowId, targetId);
+  // onActivated will fire naturally and call recordActivation — no suppression.
+}
+
+// ── Alt+W: Full MRU traversal ───────────────────────────────────────
 
 function resetTraversalTimeout() {
   if (traversalTimeout) clearTimeout(traversalTimeout);
@@ -83,7 +117,7 @@ function resetTraversalTimeout() {
       await mru.saveToStorage();
       log("Traversal auto-committed via timeout");
     }
-    expectedTraversalTabId = null;
+    pendingTraversalActivations.clear();
     traversalTimeout = null;
   }, TRAVERSAL_TIMEOUT_MS);
 }
@@ -96,18 +130,16 @@ function clearTraversalTimer() {
 }
 
 /**
- * Find the next valid (still-existing) tab in the given direction.
+ * Find the next valid (still-existing) tab in the MRU traversal.
  * Skips over stale tabs and removes them from the snapshot + MRU.
- * @param {'forward' | 'backward'} direction
  * @returns {Promise<number | null>}
  */
-async function getValidTraversalTarget(direction) {
+async function getValidTraversalTarget() {
   if (!mru.isTraversing || !mru._traversal) return null;
   const maxAttempts = mru._traversal.snapshot.length;
 
   for (let i = 0; i < maxAttempts; i++) {
-    const targetId =
-      direction === "forward" ? mru.stepForward() : mru.stepBackward();
+    const targetId = mru.stepForward();
     if (targetId == null) return null;
 
     const tab = await safeGetTab(targetId);
@@ -117,16 +149,6 @@ async function getValidTraversalTarget(direction) {
     mru.removeFromTraversal(targetId);
     mru.removeTabEverywhere(targetId);
 
-    if (!mru.isTraversing) return null; // all tabs gone
-    // After removal, cursor already points at the next element;
-    // read it directly instead of stepping again.
-    const next = mru.traversalCurrentTabId;
-    if (next == null) return null;
-    const nextTab = await safeGetTab(next);
-    if (nextTab) return next;
-    // That one is stale too — loop continues
-    mru.removeFromTraversal(next);
-    mru.removeTabEverywhere(next);
     if (!mru.isTraversing) return null;
   }
 
@@ -134,21 +156,20 @@ async function getValidTraversalTarget(direction) {
 }
 
 /**
- * Handle a single traversal step (Alt+Q or Alt+W).
- * @param {'forward' | 'backward'} direction
+ * Handle a single traversal step (Alt+W press).
  */
-async function handleTraversalStep(direction) {
-  // If already traversing in the same window, just step
+async function handleTraversalStep() {
+  // If already traversing, just step forward
   if (mru.isTraversing) {
-    const targetId = await getValidTraversalTarget(direction);
+    const targetId = await getValidTraversalTarget();
     if (targetId == null) {
       mru.cancelTraversal();
       clearTraversalTimer();
-      expectedTraversalTabId = null;
+      pendingTraversalActivations.clear();
       return;
     }
 
-    expectedTraversalTabId = targetId;
+    pendingTraversalActivations.add(targetId);
     resetTraversalTimeout();
     await activateTab(mru.traversalWindowId, targetId);
     return;
@@ -169,13 +190,13 @@ async function handleTraversalStep(direction) {
     return;
   }
 
-  const targetId = await getValidTraversalTarget(direction);
+  const targetId = await getValidTraversalTarget();
   if (targetId == null) {
     mru.cancelTraversal();
     return;
   }
 
-  expectedTraversalTabId = targetId;
+  pendingTraversalActivations.add(targetId);
   resetTraversalTimeout();
   await activateTab(activeTab.windowId, targetId);
 }
@@ -188,8 +209,8 @@ async function commitTraversalNow() {
   mru.commitTraversal();
   await mru.saveToStorage();
   clearTraversalTimer();
-  expectedTraversalTabId = null;
-  log("Traversal committed explicitly");
+  pendingTraversalActivations.clear();
+  log("Traversal committed");
 }
 
 // ── Lifecycle & MRU bookkeeping ─────────────────────────────────────
@@ -197,7 +218,6 @@ async function commitTraversalNow() {
 chrome.runtime.onInstalled.addListener(async (details) => {
   try {
     await mru.loadFromStorage();
-    // Fresh install (or empty cache): rebuild from Tab.lastAccessed. On extension *update*, keep session MRU.
     if (details.reason === "install" || Object.keys(mru.mruByWindow).length === 0) {
       log("onInstalled — rebuilding MRU", details.reason);
       await mru.rebuildAllWindowsFromBrowser();
@@ -224,7 +244,7 @@ chrome.runtime.onStartup.addListener(async () => {
     await mru.rebuildAllWindowsFromBrowser();
     await mru.saveToStorage();
   }
-  // If we were mid-traversal when the worker died, abandon it (state is lost).
+  // If we were mid-traversal when the worker died, abandon it.
   if (mru.isTraversing) {
     mru.cancelTraversal();
   }
@@ -233,16 +253,17 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   try {
     if (mru.isTraversing) {
-      if (activeInfo.tabId === expectedTraversalTabId) {
-        // Expected activation from our traversal step — suppress reordering.
+      if (pendingTraversalActivations.has(activeInfo.tabId)) {
+        // Expected activation from our traversal — suppress MRU reordering.
+        pendingTraversalActivations.delete(activeInfo.tabId);
         log("onActivated suppressed (traversal)", activeInfo.tabId);
         return;
       }
-      // User clicked a different tab manually — end traversal and record.
+      // User clicked a different tab manually — end traversal, then record.
       log("Traversal interrupted by manual tab switch to", activeInfo.tabId);
       mru.commitTraversal();
       clearTraversalTimer();
-      expectedTraversalTabId = null;
+      pendingTraversalActivations.clear();
       // Fall through to record the manually activated tab.
     }
 
@@ -256,13 +277,11 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   try {
-    // Remove from traversal snapshot if active
     if (mru.isTraversing) {
       mru.removeFromTraversal(tabId);
       if (!mru.isTraversing) {
-        // All tabs in snapshot gone
         clearTraversalTimer();
-        expectedTraversalTabId = null;
+        pendingTraversalActivations.clear();
       }
     }
     if (mru.removeTabEverywhere(tabId)) {
@@ -276,7 +295,6 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 
 chrome.tabs.onDetached.addListener(async (tabId) => {
   try {
-    // While moving between windows the tab is briefly not in any window; drop it from MRU until onAttached/onActivated.
     if (mru.isTraversing) {
       mru.removeFromTraversal(tabId);
     }
@@ -291,7 +309,6 @@ chrome.tabs.onDetached.addListener(async (tabId) => {
 
 chrome.tabs.onAttached.addListener(async (tabId, attachInfo) => {
   try {
-    // Put the tab on the front of the destination window; Chrome usually follows with onActivated if it is active.
     mru.recordActivation(attachInfo.newWindowId, tabId);
     await mru.saveToStorage();
     log("onAttached", tabId, attachInfo.newWindowId);
@@ -307,11 +324,10 @@ chrome.tabs.onAttached.addListener(async (tabId, attachInfo) => {
 
 chrome.windows.onRemoved.addListener(async (windowId) => {
   try {
-    // If traversing in the removed window, cancel
     if (mru.isTraversing && mru.traversalWindowId === windowId) {
       mru.cancelTraversal();
       clearTraversalTimer();
-      expectedTraversalTabId = null;
+      pendingTraversalActivations.clear();
     }
     if (mru.mruByWindow[windowId]) {
       delete mru.mruByWindow[windowId];
@@ -327,18 +343,23 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
 
 chrome.commands.onCommand.addListener(async (command) => {
   if (command === "mru_forward") {
+    // Alt+Q: simple 2-tab toggle — no popup, no traversal
     try {
-      await handleTraversalStep("forward");
-      await chrome.action.openPopup();
-      log("Traversal step forward + popup");
+      await handleSimpleToggle();
+      log("Alt+Q toggle complete");
     } catch (error) {
       warn("mru_forward error", error);
     }
   } else if (command === "mru_backward") {
+    // Alt+W: full MRU traversal with popup
     try {
-      await handleTraversalStep("backward");
-      await chrome.action.openPopup();
-      log("Traversal step backward + popup");
+      await handleTraversalStep();
+      try {
+        await chrome.action.openPopup();
+      } catch {
+        // Popup may already be open (Chrome closes & reopens it)
+      }
+      log("Alt+W traversal step + popup");
     } catch (error) {
       warn("mru_backward error", error);
     }
