@@ -213,6 +213,17 @@
     }
 
     /**
+     * Slot a background-opened tab (e.g. Ctrl+click) right behind the active tab so Alt+Q reaches it.
+     * @param {number} windowId
+     * @param {number} tabId
+     */
+    recordBackgroundTab(windowId, tabId) {
+      const list = (this.mruByWindow[windowId] || []).filter((id) => id !== tabId);
+      list.splice(Math.min(1, list.length), 0, tabId);
+      this.mruByWindow[windowId] = list;
+    }
+
+    /**
      * Best-effort rebuild for a window using Tab.lastAccessed (Chrome 121+ in MV3; may be undefined on older builds).
      * @param {number} windowId
      * @returns {Promise<void>}

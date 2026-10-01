@@ -215,29 +215,10 @@ async function commitTraversalNow() {
 
 // ── Lifecycle & MRU bookkeeping ─────────────────────────────────────
 
-chrome.runtime.onInstalled.addListener(async (details) => {
-  try {
-    await mru.loadFromStorage();
-    if (details.reason === "install" || Object.keys(mru.mruByWindow).length === 0) {
-      log("onInstalled — rebuilding MRU", details.reason);
-      await mru.rebuildAllWindowsFromBrowser();
-      await mru.saveToStorage();
-    } else {
-      log("onInstalled — preserved MRU from session", details.reason);
-    }
-  } catch (err) {
-    warn("onInstalled handler error", err);
-  }
-});
-
-chrome.runtime.onStartup.addListener(async () => {
-  log("onStartup — rebuilding MRU from browser tab metadata");
-  await mru.rebuildAllWindowsFromBrowser();
-  await mru.saveToStorage();
-});
-
 // Service worker wake: restore from session storage; if empty, rebuild once.
-(async () => {
+// Every listener awaits this: the event that woke the worker (e.g. Ctrl+T's onActivated) is
+// dispatched before the load resolves, and the load would otherwise clobber what it recorded.
+const ready = (async () => {
   await mru.loadFromStorage();
   if (Object.keys(mru.mruByWindow).length === 0) {
     log("Empty MRU after wake — rebuilding from browser");
@@ -250,8 +231,38 @@ chrome.runtime.onStartup.addListener(async () => {
   }
 })();
 
+chrome.runtime.onInstalled.addListener(async (details) => {
+  try {
+    await ready;
+    if (details.reason === "install" || Object.keys(mru.mruByWindow).length === 0) {
+      log("onInstalled — rebuilding MRU", details.reason);
+      await mru.rebuildAllWindowsFromBrowser();
+      await mru.saveToStorage();
+    } else {
+      log("onInstalled — preserved MRU from session", details.reason);
+    }
+
+    // Chrome drops suggested_key on conflict and extensions can't assign shortcuts, so prompt the user.
+    const unbound = (await chrome.commands.getAll()).filter((c) => c.name.startsWith("mru_") && !c.shortcut);
+    if (unbound.length) {
+      warn("Shortcuts not bound — opening shortcuts page", unbound.map((c) => c.name));
+      await chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
+    }
+  } catch (err) {
+    warn("onInstalled handler error", err);
+  }
+});
+
+chrome.runtime.onStartup.addListener(async () => {
+  await ready;
+  log("onStartup — rebuilding MRU from browser tab metadata");
+  await mru.rebuildAllWindowsFromBrowser();
+  await mru.saveToStorage();
+});
+
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   try {
+    await ready;
     if (mru.isTraversing) {
       if (pendingTraversalActivations.has(activeInfo.tabId)) {
         // Expected activation from our traversal — suppress MRU reordering.
@@ -277,6 +288,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   try {
+    await ready;
     if (mru.isTraversing) {
       mru.removeFromTraversal(tabId);
       if (!mru.isTraversing) {
@@ -295,6 +307,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 
 chrome.tabs.onDetached.addListener(async (tabId) => {
   try {
+    await ready;
     if (mru.isTraversing) {
       mru.removeFromTraversal(tabId);
     }
@@ -309,6 +322,7 @@ chrome.tabs.onDetached.addListener(async (tabId) => {
 
 chrome.tabs.onAttached.addListener(async (tabId, attachInfo) => {
   try {
+    await ready;
     mru.recordActivation(attachInfo.newWindowId, tabId);
     await mru.saveToStorage();
     log("onAttached", tabId, attachInfo.newWindowId);
@@ -317,13 +331,22 @@ chrome.tabs.onAttached.addListener(async (tabId, attachInfo) => {
   }
 });
 
-/**
- * New tabs: Chrome fires onActivated when they become active; no extra bookkeeping required here.
- * If a tab is created in background, it won't enter MRU until activated — intentional.
- */
+// Active new tabs are recorded by onActivated; background ones (Ctrl+click) need recording here.
+chrome.tabs.onCreated.addListener(async (tab) => {
+  try {
+    await ready;
+    if (tab.active || tab.id == null || tab.windowId == null) return;
+    mru.recordBackgroundTab(tab.windowId, tab.id);
+    await mru.saveToStorage();
+    log("onCreated (background)", tab.windowId, tab.id);
+  } catch (err) {
+    warn("onCreated handler error", err);
+  }
+});
 
 chrome.windows.onRemoved.addListener(async (windowId) => {
   try {
+    await ready;
     if (mru.isTraversing && mru.traversalWindowId === windowId) {
       mru.cancelTraversal();
       clearTraversalTimer();
@@ -342,6 +365,7 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
 // ── Commands ─────────────────────────────────────────────────────────
 
 chrome.commands.onCommand.addListener(async (command) => {
+  await ready;
   if (command === "mru_forward") {
     // Alt+Q: simple 2-tab toggle — no popup, no traversal
     try {
@@ -370,7 +394,7 @@ chrome.commands.onCommand.addListener(async (command) => {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "commitTraversal") {
-    commitTraversalNow().then(() => sendResponse({ ok: true }));
+    ready.then(commitTraversalNow).then(() => sendResponse({ ok: true }));
     return true; // async response
   }
 });
