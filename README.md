@@ -15,6 +15,8 @@ Chrome’s built-in **Ctrl+Tab** advances tabs in **left-to-right tab-strip orde
 
 - **Backward** command: prefer **MRU[2]** (third-most-recent) when the current tab is newest and at least three tabs exist; otherwise it falls back sensibly (with only two tabs it mirrors forward).
 
+- **Ctrl+Shift+C** copies the selected text (like Ctrl+C) instead of opening the DevTools element picker. Handled by a content script (`copy-shortcut.js`), so it works on normal web pages but not on `chrome://` pages, the Chrome Web Store, or the PDF viewer.
+
 State is kept **in memory** and mirrored to **`chrome.storage.session`** so a **suspended service worker** can resume without losing MRU. After a **full browser restart** or if storage is empty, MRU is **rebuilt** using each tab’s **`lastAccessed`** timestamp when available, with **tab index** as a fallback.
 
 ## Why Chrome’s default tab switching is different
@@ -62,9 +64,10 @@ You can try assigning **Ctrl+Tab** / **Ctrl+Shift+Tab** here; if Chrome blocks o
 | Permission | Why it’s needed |
 |------------|------------------|
 | **`tabs`** | Query tabs, read `windowId` / `lastAccessed`, and **activate** a tab + **focus** its window. |
+| **`scripting`** + **`<all_urls>`** host access | Inject the Ctrl+Shift+C copy script into tabs that were already open when the extension was installed/reloaded. |
 | **`storage`** | Persist MRU in **`chrome.storage.session`** across **service worker** suspensions (not required for every operation, but avoids losing MRU on idle). |
 
-No host permissions, no remote code, no popup — minimal surface area.
+The **Ctrl+Shift+C** copy shortcut injects a content script on `<all_urls>`, so Chrome will show a "read and change all your data on all websites" warning. The script only listens for that one key combo and calls copy; it reads nothing else.
 
 ## How the MRU algorithm works (per window)
 
@@ -111,6 +114,7 @@ Open **`chrome://extensions` → RecentTabSwitcher → Service worker → Inspec
 - `manifest.json` — MV3 manifest, `commands`, permissions.
 - `background.js` — service worker: events, commands, activation.
 - `mru-manager.js` — MRU data structure, persistence, target selection.
+- `copy-shortcut.js` — content script: remaps Ctrl+Shift+C to copy.
 - `icons/` — placeholder PNGs; replace with your branding if you like.
 
 ## License

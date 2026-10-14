@@ -232,6 +232,13 @@ const ready = (async () => {
 })();
 
 chrome.runtime.onInstalled.addListener(async (details) => {
+  // Manifest content scripts only reach pages loaded after install/reload, so inject into open tabs too.
+  for (const tab of await chrome.tabs.query({})) {
+    chrome.scripting
+      .executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["copy-shortcut.js"] })
+      .catch(() => {}); // chrome://, Web Store, etc. reject injection
+  }
+
   try {
     await ready;
     if (details.reason === "install" || Object.keys(mru.mruByWindow).length === 0) {
