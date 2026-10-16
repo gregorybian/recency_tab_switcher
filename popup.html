@@ -35,6 +35,11 @@
       flex-direction: column;
     }
 
+    .header-right {
+      display: flex;
+      gap: 6px;
+    }
+
     .select-btn {
       background: rgba(255, 255, 255, 0.2);
       color: white;
@@ -282,7 +287,10 @@
       <div>All Tabs</div>
       <div class="tab-count" id="tabCount"></div>
     </div>
-    <button class="select-btn" id="selectBtn">Select</button>
+    <div class="header-right">
+      <button class="select-btn" id="shortcutsBtn" title="Set keyboard shortcuts">Shortcuts</button>
+      <button class="select-btn" id="selectBtn">Select</button>
+    </div>
   </div>
   <div class="tab-list" id="tabList"></div>
   <div class="action-bar" id="actionBar">

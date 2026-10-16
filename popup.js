@@ -224,6 +224,10 @@ document.addEventListener('keyup', (e) => {
 
 // Wire up header buttons
 document.getElementById('selectBtn').addEventListener('click', toggleSelectMode);
+// chrome:// URLs can't be linked from a page; must go through the tabs API
+document.getElementById('shortcutsBtn').addEventListener('click', () => {
+  chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+});
 document.getElementById('selectAllBtn').addEventListener('click', toggleSelectAll);
 document.getElementById('closeSelectedBtn').addEventListener('click', closeSelectedTabs);
 
