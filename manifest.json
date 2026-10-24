@@ -17,7 +17,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["copy-shortcut.js"],
+      "js": ["copy-shortcut.js", "alt-release.js"],
       "all_frames": true,
       "run_at": "document_start"
     }
@@ -35,7 +35,14 @@
         "default": "Alt+W",
         "mac": "Alt+W"
       },
-      "description": "Cycle through all tabs in most-recently-used order (opens popup)"
+      "description": "Cycle through all tabs in most-recently-used order"
+    },
+    "mru_reverse": {
+      "suggested_key": {
+        "default": "Alt+Shift+W",
+        "mac": "Alt+Shift+W"
+      },
+      "description": "Cycle through tabs in the opposite direction of Alt+W"
     }
   },
   "action": {

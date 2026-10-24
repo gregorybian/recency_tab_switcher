@@ -3,7 +3,8 @@
  * Tracks per-window MRU order and handles keyboard commands.
  *
  * Alt+Q  → simple 2-tab toggle (no traversal, no popup, race-condition-free)
- * Alt+W  → full MRU traversal with popup (freezes the MRU list, walks a cursor)
+ * Alt+W  → full MRU traversal (freezes the MRU list, walks a cursor; commits on Alt release)
+ * Alt+Shift+W → same traversal, walking the cursor the opposite way
  */
 
 importScripts("mru-manager.js");
@@ -76,6 +77,57 @@ async function activateTab(windowId, tabId) {
   }
 }
 
+// ── Tab strip ordering ───────────────────────────────────────────────
+
+/** Serializes strip reorders so overlapping events don't interleave their moves. */
+let stripSyncChain = Promise.resolve();
+
+/**
+ * Reorder a window's tab strip to match MRU order (most recent at the top/left).
+ * Pinned tabs stay where they are. Windows with tab groups are skipped, since
+ * moving tabs across a group's range would pull them into or out of the group.
+ * @param {number} windowId
+ */
+function syncTabStripToMru(windowId) {
+  stripSyncChain = stripSyncChain.then(() => doSyncTabStrip(windowId)).catch(() => {});
+  return stripSyncChain;
+}
+
+async function doSyncTabStrip(windowId, attempt = 0) {
+  if (mru.isTraversing) return; // strip stays put while cycling; synced on commit
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({ windowId });
+  } catch {
+    return; // window gone
+  }
+  if (tabs.some((t) => t.groupId != null && t.groupId !== -1)) return;
+
+  const unpinned = tabs.filter((t) => !t.pinned).sort((a, b) => a.index - b.index);
+  const current = unpinned.map((t) => t.id);
+  const present = new Set(current);
+  const ranked = (mru.mruByWindow[windowId] || []).filter((id) => present.has(id));
+  const rankedSet = new Set(ranked);
+  const desired = [...ranked, ...current.filter((id) => !rankedSet.has(id))];
+  if (desired.every((id, i) => id === current[i])) return;
+
+  const firstIndex = tabs.length - unpinned.length;
+  try {
+    await chrome.tabs.move(desired, { index: firstIndex });
+    log("Tab strip synced to MRU", windowId);
+  } catch (err) {
+    // "Tabs cannot be edited right now (user may be dragging a tab)" — retry with fresh state.
+    if (attempt >= 4) return warn("Tab strip sync failed", windowId, err);
+    await new Promise((r) => setTimeout(r, 200));
+    await doSyncTabStrip(windowId, attempt + 1);
+  }
+}
+
+/** Sync every tracked window (after a full MRU rebuild). */
+function syncAllTabStrips() {
+  for (const wid of Object.keys(mru.mruByWindow)) syncTabStripToMru(Number(wid));
+}
+
 // ── Alt+Q: Simple 2-tab toggle ──────────────────────────────────────
 //
 // No traversal state, no popup, no onActivated suppression.
@@ -113,8 +165,10 @@ function resetTraversalTimeout() {
   if (traversalTimeout) clearTimeout(traversalTimeout);
   traversalTimeout = setTimeout(async () => {
     if (mru.isTraversing) {
+      const windowId = mru.traversalWindowId;
       mru.commitTraversal();
       await mru.saveToStorage();
+      syncTabStripToMru(windowId);
       log("Traversal auto-committed via timeout");
     }
     pendingTraversalActivations.clear();
@@ -132,14 +186,15 @@ function clearTraversalTimer() {
 /**
  * Find the next valid (still-existing) tab in the MRU traversal.
  * Skips over stale tabs and removes them from the snapshot + MRU.
+ * @param {boolean} reverse - walk toward newer tabs (wraps to the oldest first)
  * @returns {Promise<number | null>}
  */
-async function getValidTraversalTarget() {
+async function getValidTraversalTarget(reverse = false) {
   if (!mru.isTraversing || !mru._traversal) return null;
   const maxAttempts = mru._traversal.snapshot.length;
 
   for (let i = 0; i < maxAttempts; i++) {
-    const targetId = mru.stepForward();
+    const targetId = reverse ? mru.stepBackward() : mru.stepForward();
     if (targetId == null) return null;
 
     const tab = await safeGetTab(targetId);
@@ -156,12 +211,13 @@ async function getValidTraversalTarget() {
 }
 
 /**
- * Handle a single traversal step (Alt+W press).
+ * Handle a single traversal step (Alt+W press, or Alt+Shift+W when reverse).
+ * @param {boolean} reverse
  */
-async function handleTraversalStep() {
+async function handleTraversalStep(reverse = false) {
   // If already traversing, just step forward
   if (mru.isTraversing) {
-    const targetId = await getValidTraversalTarget();
+    const targetId = await getValidTraversalTarget(reverse);
     if (targetId == null) {
       mru.cancelTraversal();
       clearTraversalTimer();
@@ -190,7 +246,7 @@ async function handleTraversalStep() {
     return;
   }
 
-  const targetId = await getValidTraversalTarget();
+  const targetId = await getValidTraversalTarget(reverse);
   if (targetId == null) {
     mru.cancelTraversal();
     return;
@@ -202,14 +258,16 @@ async function handleTraversalStep() {
 }
 
 /**
- * Explicitly end traversal (called from popup via message or timeout).
+ * Explicitly end traversal (called on Alt release via message, or timeout).
  */
 async function commitTraversalNow() {
   if (!mru.isTraversing) return;
+  const windowId = mru.traversalWindowId;
   mru.commitTraversal();
   await mru.saveToStorage();
   clearTraversalTimer();
   pendingTraversalActivations.clear();
+  syncTabStripToMru(windowId);
   log("Traversal committed");
 }
 
@@ -235,7 +293,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   // Manifest content scripts only reach pages loaded after install/reload, so inject into open tabs too.
   for (const tab of await chrome.tabs.query({})) {
     chrome.scripting
-      .executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["copy-shortcut.js"] })
+      .executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["copy-shortcut.js", "alt-release.js"] })
       .catch(() => {}); // chrome://, Web Store, etc. reject injection
   }
 
@@ -245,6 +303,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
       log("onInstalled — rebuilding MRU", details.reason);
       await mru.rebuildAllWindowsFromBrowser();
       await mru.saveToStorage();
+      syncAllTabStrips();
     } else {
       log("onInstalled — preserved MRU from session", details.reason);
     }
@@ -265,6 +324,7 @@ chrome.runtime.onStartup.addListener(async () => {
   log("onStartup — rebuilding MRU from browser tab metadata");
   await mru.rebuildAllWindowsFromBrowser();
   await mru.saveToStorage();
+  syncAllTabStrips();
 });
 
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
@@ -279,7 +339,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
       }
       // User clicked a different tab manually — end traversal, then record.
       log("Traversal interrupted by manual tab switch to", activeInfo.tabId);
-      mru.commitTraversal();
+      mru.commitTraversal(); // live MRU is re-ordered below, then synced to the strip
       clearTraversalTimer();
       pendingTraversalActivations.clear();
       // Fall through to record the manually activated tab.
@@ -287,6 +347,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
     mru.recordActivation(activeInfo.windowId, activeInfo.tabId);
     await mru.saveToStorage();
+    syncTabStripToMru(activeInfo.windowId);
     log("onActivated", activeInfo.windowId, activeInfo.tabId);
   } catch (err) {
     warn("onActivated handler error", err);
@@ -332,6 +393,7 @@ chrome.tabs.onAttached.addListener(async (tabId, attachInfo) => {
     await ready;
     mru.recordActivation(attachInfo.newWindowId, tabId);
     await mru.saveToStorage();
+    syncTabStripToMru(attachInfo.newWindowId);
     log("onAttached", tabId, attachInfo.newWindowId);
   } catch (err) {
     warn("onAttached handler error", err);
@@ -345,6 +407,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
     if (tab.active || tab.id == null || tab.windowId == null) return;
     mru.recordBackgroundTab(tab.windowId, tab.id);
     await mru.saveToStorage();
+    syncTabStripToMru(tab.windowId);
     log("onCreated (background)", tab.windowId, tab.id);
   } catch (err) {
     warn("onCreated handler error", err);
@@ -382,22 +445,25 @@ chrome.commands.onCommand.addListener(async (command) => {
       warn("mru_forward error", error);
     }
   } else if (command === "mru_backward") {
-    // Alt+W: full MRU traversal with popup
+    // Alt+W: full MRU traversal (alt-release.js commits it when Alt is released)
     try {
       await handleTraversalStep();
-      try {
-        await chrome.action.openPopup();
-      } catch {
-        // Popup may already be open (Chrome closes & reopens it)
-      }
-      log("Alt+W traversal step + popup");
+      log("Alt+W traversal step");
     } catch (error) {
       warn("mru_backward error", error);
+    }
+  } else if (command === "mru_reverse") {
+    // Alt+Shift+W: same traversal, opposite direction
+    try {
+      await handleTraversalStep(true);
+      log("Alt+Shift+W reverse traversal step");
+    } catch (error) {
+      warn("mru_reverse error", error);
     }
   }
 });
 
-// ── Messages from popup ──────────────────────────────────────────────
+// ── Messages from popup / content scripts ─────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "commitTraversal") {

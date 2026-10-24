@@ -33,7 +33,7 @@ Chrome intentionally maps **Ctrl+Tab** to **linear tab-strip order** (with optio
 
 ### Workarounds
 
-1. **Use alternate shortcuts** (this extension’s default): e.g. **Alt+Q** / **Alt+E** on Windows/Linux, **Command+E** / **Alt+E** on macOS for the two commands (defaults are set in `manifest.json`; you can change them in the shortcuts page).
+1. **Use alternate shortcuts** (this extension’s default): **Alt+Q** (toggle), **Alt+W** (cycle back through history) and **Alt+Shift+W** (cycle the opposite way) on Windows/Linux; **Command+E** / **Alt+W** / **Alt+Shift+W** on macOS (defaults are set in `manifest.json`; you can change them in the shortcuts page).
 2. **User remapping in `chrome://extensions/shortcuts`**: try binding **Ctrl+Tab** to **`mru_forward`**; if Chrome accepts it on your system, it may work — but **do not depend on this** for production assumptions.
 3. **OS-level remapping** (e.g. tools that remap keys outside Chrome) can forward a **non-reserved** combo to a **different** combo that triggers the extension — still fragile but sometimes practical.
 4. **Full system-level interception** of **Ctrl+Tab** (including outside Chrome) requires **native code** (accessibility APIs, keyboard hooks, driver-level tools) or a **native host** — **not** a normal extension alone.
@@ -89,7 +89,9 @@ Open **`chrome://extensions` → RecentTabSwitcher → Service worker → Inspec
 | **Closed tabs** | Removed from MRU on `tabs.onRemoved`. |
 | **New tabs** | Enter MRU when **activated** (normal Chrome behavior). |
 | **Multiple windows** | **Separate MRU list per `windowId`**. Commands use the **last focused** window’s active tab. |
-| **Pinned tabs** | Treated like normal tabs. |
+| **Tab strip order** | After each committed switch, the tab strip (horizontal or vertical) is reordered to match MRU: most recent at the top/left. It stays still while cycling with Alt+W and updates on commit. |
+| **Pinned tabs** | Treated like normal tabs in MRU, but never moved in the tab strip. |
+| **Tab groups** | Windows containing tab groups are not reordered (moving tabs would join or split groups). |
 | **Incognito** | Works only if you enable **“Allow in Incognito”** for the extension. Chrome isolates incognito; you must opt in. |
 | **Discarded / frozen tabs** | Tab id remains valid; activation wakes the tab like a normal click. |
 | **Startup / session restore** | `runtime.onStartup` rebuilds MRU from **`lastAccessed`** (and index fallback). |
@@ -115,6 +117,7 @@ Open **`chrome://extensions` → RecentTabSwitcher → Service worker → Inspec
 - `background.js` — service worker: events, commands, activation.
 - `mru-manager.js` — MRU data structure, persistence, target selection.
 - `copy-shortcut.js` — content script: remaps Ctrl+Shift+C to copy.
+- `alt-release.js` — content script: commits an Alt+W traversal when Alt is released.
 - `icons/` — placeholder PNGs; replace with your branding if you like.
 
 ## License
