@@ -84,13 +84,42 @@ let stripSyncChain = Promise.resolve();
 
 /**
  * Reorder a window's tab strip to match MRU order (most recent at the top/left).
- * Pinned tabs stay where they are. Windows with tab groups are skipped, since
- * moving tabs across a group's range would pull them into or out of the group.
+ * Pinned tabs stay where they are. A tab group moves as one block, ranked by its most
+ * recent member, and its tabs are MRU-ordered inside it, so membership never changes.
  * @param {number} windowId
  */
 function syncTabStripToMru(windowId) {
   stripSyncChain = stripSyncChain.then(() => doSyncTabStrip(windowId)).catch(() => {});
   return stripSyncChain;
+}
+
+/**
+ * Desired strip as units, in MRU order: one per loose tab (groupId -1) and one per tab group.
+ * @param {chrome.tabs.Tab[]} unpinned - sorted by index
+ * @param {number[]} mruList
+ */
+function planStrip(unpinned, mruList) {
+  const rank = new Map(mruList.map((id, i) => [id, i]));
+  const rankOf = (t) => rank.get(t.id) ?? mruList.length + t.index; // untracked tabs keep strip order at the end
+  const units = [];
+  const groupUnits = new Map();
+  for (const t of unpinned) {
+    if (t.groupId == null || t.groupId === -1) {
+      units.push({ groupId: -1, tabs: [t] });
+    } else if (groupUnits.has(t.groupId)) {
+      groupUnits.get(t.groupId).tabs.push(t);
+    } else {
+      const u = { groupId: t.groupId, tabs: [t] };
+      groupUnits.set(t.groupId, u);
+      units.push(u);
+    }
+  }
+  for (const u of units) {
+    u.tabs.sort((a, b) => rankOf(a) - rankOf(b));
+    u.rank = rankOf(u.tabs[0]);
+  }
+  units.sort((a, b) => a.rank - b.rank);
+  return units;
 }
 
 async function doSyncTabStrip(windowId, attempt = 0) {
@@ -101,19 +130,34 @@ async function doSyncTabStrip(windowId, attempt = 0) {
   } catch {
     return; // window gone
   }
-  if (tabs.some((t) => t.groupId != null && t.groupId !== -1)) return;
 
   const unpinned = tabs.filter((t) => !t.pinned).sort((a, b) => a.index - b.index);
-  const current = unpinned.map((t) => t.id);
-  const present = new Set(current);
-  const ranked = (mru.mruByWindow[windowId] || []).filter((id) => present.has(id));
-  const rankedSet = new Set(ranked);
-  const desired = [...ranked, ...current.filter((id) => !rankedSet.has(id))];
-  if (desired.every((id, i) => id === current[i])) return;
+  const units = planStrip(unpinned, mru.mruByWindow[windowId] || []);
+  const desired = units.flatMap((u) => u.tabs.map((t) => t.id));
+  if (desired.every((id, i) => id === unpinned[i].id)) return;
 
   const firstIndex = tabs.length - unpinned.length;
   try {
-    await chrome.tabs.move(desired, { index: firstIndex });
+    // Place units left to right; each lands on a unit boundary, so no tab joins or leaves a group.
+    const order = unpinned.map((t) => t.id); // simulated strip, to skip units already in place
+    let pos = firstIndex;
+    for (const u of units) {
+      const ids = u.tabs.map((t) => t.id);
+      const at = pos - firstIndex;
+      if (ids.every((id, k) => order[at + k] === id)) {
+        pos += ids.length;
+        continue;
+      }
+      const rest = order.filter((id) => !ids.includes(id));
+      order.splice(0, order.length, ...rest.slice(0, at), ...ids, ...rest.slice(at));
+      if (u.groupId === -1) {
+        await chrome.tabs.move(u.tabs[0].id, { index: pos });
+      } else {
+        await chrome.tabGroups.move(u.groupId, { index: pos });
+        for (let k = 0; k < u.tabs.length; k++) await chrome.tabs.move(u.tabs[k].id, { index: pos + k });
+      }
+      pos += u.tabs.length;
+    }
     log("Tab strip synced to MRU", windowId);
   } catch (err) {
     // "Tabs cannot be edited right now (user may be dragging a tab)" — retry with fresh state.
@@ -345,6 +389,13 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
       // Fall through to record the manually activated tab.
     }
 
+    // A late event for an intermediate traversal tab (after commit) must not jump ahead of the real one.
+    const [nowActive] = await chrome.tabs.query({ active: true, windowId: activeInfo.windowId });
+    if (nowActive && nowActive.id !== activeInfo.tabId) {
+      log("onActivated ignored (stale)", activeInfo.tabId);
+      return;
+    }
+
     mru.recordActivation(activeInfo.windowId, activeInfo.tabId);
     await mru.saveToStorage();
     syncTabStripToMru(activeInfo.windowId);
@@ -434,8 +485,16 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
 
 // ── Commands ─────────────────────────────────────────────────────────
 
-chrome.commands.onCommand.addListener(async (command) => {
-  await ready;
+// Commands and Alt-release commits run one at a time in arrival order. Otherwise a quick Alt release
+// (or a second Alt+W) can be handled while the previous step is still awaiting, and get lost.
+let eventQueue = Promise.resolve();
+function enqueue(fn) {
+  const run = eventQueue.then(() => ready).then(fn);
+  eventQueue = run.catch(() => {});
+  return run;
+}
+
+chrome.commands.onCommand.addListener((command) => enqueue(async () => {
   if (command === "mru_forward") {
     // Alt+Q: simple 2-tab toggle — no popup, no traversal
     try {
@@ -461,13 +520,13 @@ chrome.commands.onCommand.addListener(async (command) => {
       warn("mru_reverse error", error);
     }
   }
-});
+}));
 
 // ── Messages from popup / content scripts ─────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "commitTraversal") {
-    ready.then(commitTraversalNow).then(() => sendResponse({ ok: true }));
+    enqueue(commitTraversalNow).finally(() => sendResponse({ ok: true }));
     return true; // async response
   }
 });

@@ -65,6 +65,7 @@ You can try assigning **Ctrl+Tab** / **Ctrl+Shift+Tab** here; if Chrome blocks o
 |------------|------------------|
 | **`tabs`** | Query tabs, read `windowId` / `lastAccessed`, and **activate** a tab + **focus** its window. |
 | **`scripting`** + **`<all_urls>`** host access | Inject the Ctrl+Shift+C copy script into tabs that were already open when the extension was installed/reloaded. |
+| **`tabGroups`** | Move a whole tab group when reordering the tab strip, so groups stay intact. |
 | **`storage`** | Persist MRU in **`chrome.storage.session`** across **service worker** suspensions (not required for every operation, but avoids losing MRU on idle). |
 
 The **Ctrl+Shift+C** copy shortcut injects a content script on `<all_urls>`, so Chrome will show a "read and change all your data on all websites" warning. The script only listens for that one key combo and calls copy; it reads nothing else.
@@ -91,7 +92,8 @@ Open **`chrome://extensions` → RecentTabSwitcher → Service worker → Inspec
 | **Multiple windows** | **Separate MRU list per `windowId`**. Commands use the **last focused** window’s active tab. |
 | **Tab strip order** | After each committed switch, the tab strip (horizontal or vertical) is reordered to match MRU: most recent at the top/left. It stays still while cycling with Alt+W and updates on commit. |
 | **Pinned tabs** | Treated like normal tabs in MRU, but never moved in the tab strip. |
-| **Tab groups** | Windows containing tab groups are not reordered (moving tabs would join or split groups). |
+| **Tab groups** | A group moves as one block, placed by its most recent tab; inside the group, tabs are MRU-ordered. Group membership never changes. |
+| **Pages without the content script** | `chrome://` pages, the New Tab page, `about:blank`, the Web Store and the PDF viewer can't see the Alt release, so a traversal that ends there commits after the 5 s timeout. |
 | **Incognito** | Works only if you enable **“Allow in Incognito”** for the extension. Chrome isolates incognito; you must opt in. |
 | **Discarded / frozen tabs** | Tab id remains valid; activation wakes the tab like a normal click. |
 | **Startup / session restore** | `runtime.onStartup` rebuilds MRU from **`lastAccessed`** (and index fallback). |
@@ -107,7 +109,6 @@ Open **`chrome://extensions` → RecentTabSwitcher → Service worker → Inspec
 ## Future improvements
 
 - Optional **popup** showing MRU list with fuzzy search.
-- **chrome.tabGroups** awareness (group-local MRU optional).
 - **Session** export/import for debugging.
 - **Telemetry-free** self-test page under `chrome-extension://` for contributors.
 
